@@ -4,12 +4,8 @@ import javax.activation.DataHandler;
 import javax.activation.DataSource;
 import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
-import javax.mail.Address;
-import javax.mail.Header;
+import javax.mail.*;
 import javax.mail.Message.RecipientType;
-import javax.mail.MessagingException;
-import javax.mail.Multipart;
-import javax.mail.Part;
 import javax.mail.internet.AddressException;
 import javax.mail.internet.ContentType;
 import javax.mail.internet.InternetAddress;
@@ -25,14 +21,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.UnsupportedEncodingException;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Map;
-import java.util.TreeMap;
+import java.util.*;
 
 import static java.lang.String.format;
 import static org.simplejavamail.internal.util.MiscUtil.extractCID;
@@ -55,7 +44,7 @@ public final class MimeMessageParser {
 		// taken from: protected javax.mail.internet.InternetHeaders constructor
 		/*
 		 * When extracting information to create an Email, we're NOT interested in the following headers:
-         */
+		 */
 		// HEADERS_TO_IGNORE.add("Return-Path"); // bounceTo address
 		HEADERS_TO_IGNORE.add("Received");
 		HEADERS_TO_IGNORE.add("Resent-Date");
@@ -133,13 +122,21 @@ public final class MimeMessageParser {
 			final DataSource ds = createDataSource(currentPart);
 			// if the diposition is not provided, for now the part should be treated as inline (later non-embedded inline attachments are moved)
 			if (Part.ATTACHMENT.equalsIgnoreCase(disposition)) {
-				parsedComponents.attachmentList.put(parseResourceName(parseContentID(currentPart), parseFileName(currentPart)), ds);
+				String resourceName = parseResourceName(parseContentID(currentPart), parseFileName(currentPart));
+				if (valueNullOrEmpty(resourceName)) {
+					resourceName = "unnamed";
+				}
+				parsedComponents.attachmentList.add(new AbstractMap.SimpleEntry(resourceName, ds));
 			} else if (disposition == null || Part.INLINE.equalsIgnoreCase(disposition)) {
 				if (parseContentID(currentPart) != null) {
 					parsedComponents.cidMap.put(parseContentID(currentPart), ds);
 				} else {
 					// contentID missing -> treat as standard attachment
-					parsedComponents.attachmentList.put(parseResourceName(null, parseFileName(currentPart)), ds);
+					String resourceName = parseResourceName(null, parseFileName(currentPart));
+					if (valueNullOrEmpty(resourceName)) {
+						resourceName = "unnamed";
+					}
+					parsedComponents.attachmentList.add(new AbstractMap.SimpleEntry(resourceName, ds));
 				}
 			} else {
 				throw new IllegalStateException("invalid attachment type");
@@ -242,12 +239,12 @@ public final class MimeMessageParser {
 		}
 	}
 
-	@Nonnull
 	private static InternetAddress createAddress(final Header header, final String typeOfAddress) {
-		try {
-			return new InternetAddress(header.getValue());
-		} catch (final AddressException e) {
-			throw new MimeMessageParseException(format(MimeMessageParseException.ERROR_PARSING_ADDRESS, typeOfAddress), e);
+		InternetAddress[] addresses = getSafeAddress(header.getValue());
+        if (addresses != null && addresses.length == 1) {
+            return addresses[0];
+        } else {
+			return null;
 		}
 	}
 
@@ -388,9 +385,26 @@ public final class MimeMessageParser {
 	@Nullable
 	public static Address[] retrieveRecipients(@Nonnull final MimeMessage mimeMessage, final RecipientType recipientType) {
 		try {
-			return mimeMessage.getRecipients(recipientType);
+			return getSafeRecipients(mimeMessage, recipientType);
 		} catch (final MessagingException e) {
 			throw new MimeMessageParseException(format(MimeMessageParseException.ERROR_GETTING_RECIPIENTS, recipientType), e);
+		}
+	}
+
+	private static Address[] getSafeRecipients(@Nonnull final MimeMessage mimeMessage, final RecipientType recipientType) throws MessagingException {
+		String headerValue = mimeMessage.getHeader(recipientType.toString(), ",");
+		return getSafeAddress(headerValue);
+	}
+
+	private static InternetAddress[] getSafeAddress(String headerValue) {
+		if (valueNullOrEmpty(headerValue)) {
+			return null;
+		} else {
+			try {
+				return InternetAddress.parseHeader(headerValue, false);
+			} catch (AddressException e) {
+				return null;
+			}
 		}
 	}
 
@@ -454,14 +468,14 @@ public final class MimeMessageParser {
 			Map.Entry<String, DataSource> cidEntry = it.next();
 			String cid = extractCID(cidEntry.getKey());
 			if (htmlContent == null || !htmlContent.contains("cid:" + cid)) {
-				parsedComponents.attachmentList.put(cid, cidEntry.getValue());
+				parsedComponents.attachmentList.add(new AbstractMap.SimpleEntry(cid, cidEntry.getValue()));
 				it.remove();
 			}
 		}
 	}
 
 	public static class ParsedMimeMessageComponents {
-		final Map<String, DataSource> attachmentList = new TreeMap<>();
+		final List<Map.Entry<String, DataSource>> attachmentList = new ArrayList<>();
 		final Map<String, DataSource> cidMap = new TreeMap<>();
 		private final Map<String, Object> headers = new HashMap<>();
 		private final List<InternetAddress> toAddresses = new ArrayList<>();
@@ -481,7 +495,7 @@ public final class MimeMessageParser {
 			return messageId;
 		}
 
-		public Map<String, DataSource> getAttachmentList() {
+		public List<Map.Entry<String, DataSource>> getAttachmentList() {
 			return attachmentList;
 		}
 
